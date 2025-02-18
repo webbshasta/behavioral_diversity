@@ -1,0 +1,544 @@
+---
+title: "Untitled"
+author: "Shasta Webb"
+date: "2024-11-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+### LOADING REQUIRED PACKAGES
+
+```{r}
+library(vegan); library(lubridate); library(dplyr); library(tidyr); library(nlme); library(ggplot2); library(sjPlot); library(ggpubr); library(fuzzyjoin); library(car); library(jcolors); library(glmmTMB)
+```
+
+### Reading in RDS objects
+
+```{r}
+df_prop_general <- readRDS("~/Desktop/CapuchinBehaviouralDiversity/df_prop_general_fruit.RDS")
+df_prop_forage <- readRDS("~/Desktop/CapuchinBehaviouralDiversity/df_prop_forage_fruit.RDS")
+df_combinedInd_general <- readRDS("~/Desktop/CapuchinBehaviouralDiversity/df_combinedInd_general_fruit.RDS")
+df_combinedInd_forage <- readRDS("~/Desktop/CapuchinBehaviouralDiversity/df_combinedInd_forage_fruit.RDS")
+df_census_filt <- readRDS("~/Desktop/CapuchinBehaviouralDiversity/df_census_filt.RDS") # this object is a df with census information and metadata for the entire study
+```
+
+### VISUALIZATIONS
+
+#### GROUP SIZE OVER TIME
+
+```{r}
+groupTest <- df_census_filt %>%
+             group_by(Group, CensusYear) %>%
+             mutate(facet = case_when(Group %in% c("CP", "AD", "RM") ~ "CP to AD & RM",
+                                      Group %in% c("GN", "BC", "GN2") ~ "GN to GN2 & BC",
+                                      Group == "LV" ~ "LV",
+                                      Group == "EX" ~ "EX")) %>%
+            mutate(MeanGroupSize = mean(TotalGroupSize)) %>%
+            ungroup()
+            
+
+groupSizeOverTime <- ggplot(data = groupTest, aes(x = factor(CensusYear), y = MeanGroupSize, color = Group, size = MeanGroupSize)) +
+      geom_hline(yintercept = 10, linetype = "dashed", color = "grey") +
+      geom_hline(yintercept = 20, linetype = "dashed", color = "grey") +
+      geom_hline(yintercept = 30, linetype = "dashed", color = "grey") +
+      geom_point() +
+      scale_color_jcolors(palette = "pal7") +
+      xlab("") + ylab("Mean Group Size\n") +
+      ylim(1, 40) +
+      theme_bw() +
+      theme(legend.title = element_blank(),
+            axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+            panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+            axis.title=element_text(size=18),
+            axis.text=element_text(size=12)) +
+     facet_grid(rows = vars(facet)); groupSizeOverTime
+
+summary(df_census_filt$TotalGroupSize)
+```  
+
+### DATA ANALYSIS GROUP LEVEL GENERAL
+
+```{r}
+#visualizing raw data
+
+rawDataGroupRichness <- ggplot(data = df_prop_general, aes(x = TotalGroupSize, y = S.obs)) +
+  geom_jitter(size = 0.1) +
+  theme_minimal() +
+  xlab("\nGroup Size") + ylab("Observed Behavioral Richness\n") +
+  xlim(0,40) + theme(axis.title=element_text(size=18), axis.text=element_text(size=12)); rawDataGroupRichness
+
+rawDataGroupShannon <- ggplot(data = df_prop_general, aes(x = TotalGroupSize, y = shannon)) +
+  geom_jitter(size = 0.1) +
+  theme_minimal() +
+  xlab("\nGroup Size") + ylab("Shannon Behavioral Diversity\n") +
+  xlim(0,40) + theme(axis.title=element_text(size=18), axis.text=element_text(size=12)); rawDataGroupShannon
+```
+
+#### BEHAVIOURAL RICHNESS MODEL (Group Level)
+
+```{r}
+null_model <- glmmTMB(S.obs ~ 1 + (1 | Group/PropMonkeysInScan), data = df_prop_general, family = poisson)
+
+model <- glmmTMB(S.obs ~ Temp_z + 
+                   Rainfall_z + 
+                   TotalGroupSize_z + 
+                   PropFemales + 
+                   biomass_monthly_kg_z +
+                   (1 | Group/PropMonkeysInScan),
+                   data = df_prop_general,
+                   family = poisson)
+
+AIC(null_model, model)
+
+#           df      AIC
+#null_model  3 32648.79
+#model       8 32556.88
+
+tab_model(model)
+```
+
+#### BEHAVIORAL SHANNON DIVERSITY MODEL (Group Level)
+
+```{r}
+null_model_shannon <- glmmTMB(shannon ~ 1 + (1 | Group/PropMonkeysInScan), data = df_prop_general, family = ziGamma, ziformula = ~ 1, start = list(beta = rep(0, 1)), control = glmmTMBControl(optimizer = optim, optArgs = list(method = "BFGS")))
+
+model_shannon <- glmmTMB(shannon ~ Temp_z + 
+                   Rainfall_z + 
+                   TotalGroupSize_z + 
+                   PropFemales + 
+                   biomass_monthly_kg_z +
+                 (1 | Group/PropMonkeysInScan),
+                 data = df_prop_general,
+                 family = ziGamma,
+                 ziformula = ~ 1,
+                 start = list(beta = rep(0, 6)),  # Adjust the length based on the number of predictors
+                 control = glmmTMBControl(optimizer = optim, optArgs = list(method = "BFGS")))
+
+AIC(null_model_shannon, model_shannon)
+
+#                   df      AIC
+#null_model_shannon  5 14340.47
+#model_shannon      10 14237.89
+
+tab_model(model, model_shannon, file = "~/Desktop/CapuchinBehaviouralDiversity/SuppTable2.doc")
+```
+
+We compared including proportion of monkeys in scan with number of monkeys in scan. First, in an AIC comparison, the model with Proportion of Monkeys in Scan has more explanatory power (delta AIC > 2). Second, in comparing the results of each model, the effect of our predictor of interest is nearly identical. Therefore, we proceeded with Proportion of Monkeys in Scan as our control for differences in sampling effort.
+
+#### GROUP TESTING FOR AUTOCORRELATION
+
+Autocorrelation of behaviours from one day to the next or one scan to the next can be an issue when interpreting p-values, as the non-independence of the data is not taken into account. We can check to see if this is a problem by looking at the autocorrelation in the residuals of the model.
+
+```{r}
+#First, fit we fit our linear mixed effects model using the glmmTMB function from the glmmTMB package.
+
+mRich; m1
+
+#Second, we extract the residuals from the fitted model using the resid() function.
+
+mRich_resid <- resid(mRich)
+mRich_resid_numeric <- unname(mRich_resid)
+
+m1_resid <- resid(m1)
+m1_resid_numeric <- unname(m1_resid)
+
+#Third, create a time-related variable (e.g., the order of observations) and plot it
+
+order_variable <- 1:nrow(df_prop_general)
+
+plot(order_variable, mRich_resid_numeric, xlab = "Time", ylab = "Residuals", main = "Residuals Over Time")
+plot(order_variable, m1_resid_numeric, xlab = "Time", ylab = "Residuals", main = "Residuals Over Time")
+
+#Fourth, create an autocorrelation function (ACF) plot to assess the correlation between residuals at different lags
+acf(mRich_resid_numeric, lag.max = 10)
+acf(m1_resid_numeric, lag.max = 10)
+
+# Assuming 'mRich_resid_numeric' is your numeric vector of residuals
+n <- length(mRich_resid_numeric)
+dw_statistic <- sum(diff(mRich_resid_numeric)^2) / sum(mRich_resid_numeric^2)
+
+# Compare with critical values for significance
+# For a two-sided test, compare with 1.5 (lower bound) and 2.5 (upper bound)
+dw_significance <- dw_statistic < 1.5 | dw_statistic > 2.5
+
+# Print results
+cat("Durbin-Watson Statistic:", dw_statistic, "\n")
+cat("Significant at 5% level?", dw_significance, "\n")
+
+# Assuming 'm1_resid_numeric' is your numeric vector of residuals
+n_m1 <- length(m1_resid_numeric)
+dw_statistic_m1 <- sum(diff(m1_resid_numeric)^2) / sum(m1_resid_numeric^2)
+
+# Compare with critical values for significance
+# For a two-sided test, compare with 1.5 (lower bound) and 2.5 (upper bound)
+dw_significance_m1 <- dw_statistic_m1 < 1.5 | dw_statistic_m1 > 2.5
+
+# Print results
+cat("Durbin-Watson Statistic:", dw_statistic_m1, "\n")
+cat("Significant at 5% level?", dw_significance_m1, "\n")
+
+# Results between 1.5 and 2.5 are considered evidence of slight autocorrelation. Our results are 1.8 for the richness model, and 1.6 for the Shannon model. These suggest slight positive autocorrelation of scans, but not at a level where we feel it is necessary to add a correlation structre to our models.
+```
+
+### PLOTTING MODEL PREDICTIONS (Group Level)
+
+```{r}
+richness_group_level_plot <- plot_model(model, 
+                                        type = "pred", 
+                                        terms = c("TotalGroupSize_z"),
+                                        title = "",
+                                        colors = c("cornflowerblue"),  # Line color and CI color
+                                        ci.lvl = 0.95,  # Confidence interval level
+                                        alpha = 0.3) +  # Transparency of CI intervals
+                                        theme_minimal() +
+                                        labs(x = "\nTotal Group Size (z-scored)", 
+                                             y = "Predicted Behavioral Richness\n(Group Level)\n")
+richness_group_level_plot
+
+shannon_group_level_plot <- plot_model(model_shannon, 
+                                        type = "pred", 
+                                        terms = c("TotalGroupSize_z"),
+                                        title = "",
+                                        colors = c("cornflowerblue"),  # Line color and CI color
+                                        ci.lvl = 0.95,  # Confidence interval level
+                                        alpha = 0.3) +  # Transparency of CI intervals
+                                        theme_minimal() +
+                                        labs(x = "\nTotal Group Size (z-scored)", 
+                                             y = "Predicted Behavioral Shannon Diversity\n(Group Level)\n")
+shannon_group_level_plot
+
+ggarrange(richness_group_level_plot, shannon_group_level_plot, labels = c("A", "B"))
+```
+
+
+### DATA ANALYSIS INDIVIDUAL LEVEL GENERAL 
+
+```{r}
+null_model_mRichInd_general <- glmmTMB(S.obs ~ 1 + (1 | TotalScans/MonkeyName), data = df_combinedInd_general, family = poisson)
+
+df_combinedInd_general$Rainfall_z <- scale(df_combinedInd_general$Rainfall)
+df_combinedInd_general$TempMax_z <- scale(df_combinedInd_general$TempMax)
+
+mRichInd_general <- glmmTMB(S.obs ~ TempMax_z + 
+                   Rainfall_z + 
+                   TotalGroupSize_z + 
+                   AgeClass + 
+                   domLevel +
+                   Sex +
+                   biomass_monthly_kg_z +
+                 (1 | TotalScans/MonkeyName),
+                 data = df_combinedInd_general,
+                 family = poisson)
+
+AIC(null_model_mRichInd_general, mRichInd_general)
+
+
+m1ind_null_general <-  glmmTMB(shannon ~ 1 +
+                              (1 | TotalScans/MonkeyName), 
+                              data = df_combinedInd_general,
+                              family = ziGamma, ziformula = ~ 1)
+
+
+m1ind_general <- glmmTMB(shannon ~ TempMax_z +
+                              Rainfall_z +
+                              AgeClass + 
+                              TotalGroupSize_z +
+                              Sex +
+                              domLevel +
+                              biomass_monthly_kg_z +
+                              (1 | TotalScans/MonkeyName), 
+                              data = df_combinedInd_general,
+                              family = ziGamma, ziformula = ~ 1,
+                              start = list(beta = rep(0, 12)),  # Adjust the length based on the number of predictors
+                              control = glmmTMBControl(optimizer = optim, optArgs = list(method = "BFGS")))
+
+
+AIC(m1ind_null_general, m1ind_general)
+
+tab_model(mRichInd_general, m1ind_general, file = "~/Desktop/CapuchinBehaviouralDiversity/SuppTable3.doc")
+
+ind_richness_level_plot <- plot_model(mRichInd_general, 
+                                        type = "pred", 
+                                        terms = c("TotalGroupSize_z"),
+                                        title = "",
+                                        colors = c("purple"),  # Line color and CI color
+                                        ci.lvl = 0.95,  # Confidence interval level
+                                        alpha = 0.3) +  # Transparency of CI intervals
+                                        theme_minimal() +
+                                        labs(x = "\nTotal Group Size (z-scored)", 
+                                             y = "Predicted Behavioral Richness\n(Individual Level)\n"); ind_richness_level_plot
+
+m1ind_general_shannon_level_plot <- plot_model(m1ind_general, 
+                                        type = "pred", 
+                                        terms = c("TotalGroupSize_z"),
+                                        title = "",
+                                        colors = c("purple"),  # Line color and CI color
+                                        ci.lvl = 0.95,  # Confidence interval level
+                                        alpha = 0.3) +  # Transparency of CI intervals
+                                        theme_minimal() +
+                                        labs(x = "\nTotal Group Size (z-scored)", 
+                                             y = "Predicted Shannon Behavioral Diversity\n(Individual Level)\n"); m1ind_general_shannon_level_plot
+
+ggarrange(ind_richness_level_plot, m1ind_general_shannon_level_plot, labels = c("A", "B"))
+```
+
+### Does social aggression increase with group size?
+
+```{r}
+df_prop_general #general ethogram
+
+ggplot(data = df_prop_general, aes(x = TotalGroupSize, y = SAG)) +
+  geom_jitter() +
+  theme_minimal()
+
+mSAG_null <- glmmTMB(SAG ~ 1 +
+                   (1 | Group/PropMonkeysInScan),
+                   data = df_prop_general,
+                   family = poisson)
+
+mSAG <- glmmTMB(SAG ~ Temp_z + 
+                   Rainfall_z + 
+                   TotalGroupSize_z + 
+                   PropFemales + 
+                   biomass_monthly_kg_z +
+                   (1 | Group/PropMonkeysInScan),
+                   data = df_prop_general,
+                   family = poisson)
+
+AIC(mSAG_null, mSAG)
+
+#          df      AIC
+#mSAG_null  3 5629.661
+#mSAG       8 5562.256
+
+df_combinedInd_general$Rainfall_z <- scale(df_combinedInd_general$Rainfall)
+df_combinedInd_general$Temp_z <- scale(df_combinedInd_general$TempMax)
+df_combinedInd_general$domLevel <- factor(df_combinedInd_general$domLevel, levels = c("Unassessed", "low", "mid", "high"))
+
+mSAG_ind_null <- glmmTMB(SAG ~ 1 +
+                   (1 | TotalScans/MonkeyName),
+                   data = df_combinedInd_general,
+                   family = poisson)
+
+mSAGInd_general <- glmmTMB(SAG ~ Temp_z + 
+                   Rainfall_z + 
+                   AgeClass + 
+                   TotalGroupSize_z +
+                   TotalGroupSize_z*domLevel +
+                   domLevel +
+                   biomass_monthly_kg +
+                   Sex +
+                   (1 | TotalScans/MonkeyName),
+                   data = df_combinedInd_general,
+                   family = poisson)
+
+AIC(mSAG_ind_null, mSAGInd_general)
+
+#                df      AIC
+#mSAG_ind_null    3 5317.406
+#mSAGInd_general 17 5043.079
+
+tab_model(mSAG, mSAGInd_general, file = "~/Desktop/CapuchinBehaviouralDiversity/SuppTable6.doc")
+
+SAG_group_level_plot <- plot_model(mSAG, 
+                                        type = "pred", 
+                                        terms = c("TotalGroupSize_z"),
+                                        title = "",
+                                        colors = c("cornflowerblue"),  # Line color and CI color
+                                        ci.lvl = 0.95,  # Confidence interval level
+                                        alpha = 0.3) +  # Transparency of CI intervals
+                                        theme_minimal() +
+                                        labs(x = "\nTotal Group Size (z-scored)", 
+                                             y = "Predicted Number of Monkeys\nExhibitng Agonistic Behaviors\n(Group Level)\n"); SAG_group_level_plot
+
+SAG_ind_level_plot <- plot_model(mSAGInd_general, 
+                                        type = "pred", 
+                                        terms = c("TotalGroupSize_z"),
+                                        title = "",
+                                        colors = c("cornflowerblue"),  # Line color and CI color
+                                        ci.lvl = 0.95,  # Confidence interval level
+                                        alpha = 0.3) +  # Transparency of CI intervals
+                                        theme_minimal() +
+                                        labs(x = "\nTotal Group Size (z-scored)", 
+                                             y = "Predicted Agonism Scans at Individual Level\n"); SAG_ind_level_plot
+
+SAG_ind_level_plot_dom <- plot_model(mSAGInd_general, 
+                                 type = "pred", 
+                                 terms = c("TotalGroupSize_z", "domLevel"),
+                                 title = "",
+                                 colors = c("red", "cornflowerblue", "darkorange", "forestgreen"),  # Colors for different levels of domLevel
+                                 ci.lvl = 0.95,  # Confidence interval level
+                                 alpha = 0.3) +  # Transparency of CI intervals
+                                 theme_minimal() +
+                                 labs(x = "\nTotal Group Size (z-scored)", 
+                                      y = "Predicted Agonism Scans at Individual Level\n"); SAG_ind_level_plot_dom
+
+
+
+ggarrange(SAG_group_level_plot, SAG_ind_level_plot, labels = c("A", "B"))
+```
+
+### DATA ANALYSIS GROUP LEVEL - FORAGE
+
+```{r}
+rawDataGroupRichnessForaging <- ggplot(data = df_prop_forage, aes(x = TotalGroupSize, y = S.obs)) +
+  geom_jitter() +
+  theme_minimal() +
+  xlab("\nGroup Size") + ylab("Observed Behavioural Richness\n"); rawDataGroupRichnessForaging
+
+rawDataGroupShannonForaging <- ggplot(data = df_prop_forage, aes(x = TotalGroupSize, y = shannon)) +
+  geom_jitter() +
+  theme_minimal() +
+  xlab("\nGroup Size") + ylab("Shannon Behavioural Diversity\n"); rawDataGroupShannonForaging
+
+ggarrange(rawDataGroupRichnessForaging, rawDataGroupShannonForaging)
+
+#null model
+null_mRich_forage <- glmmTMB(S.obs ~ 1 + 
+                              (1 | Group/PropMonkeysInScan),
+                              data = df_prop_forage,
+                              family = poisson)
+
+#model 
+mRich_forage <- glmmTMB(S.obs ~ Temp_z +
+                              Rainfall_z +
+                              TotalGroupSize_z +
+                              PropFemales +
+                              biomass_monthly_kg + 
+                              (1 | Group/PropMonkeysInScan),
+                              data = df_prop_forage,
+                              family = poisson)
+
+#compare null to model
+AIC(null_mRich_forage, mRich_forage)
+
+#                  df      AIC
+#null_mRich_forage  3 27458.42
+#mRich_forage       8 27450.78
+
+tab_model(mRich_forage, file = "~/Desktop/CapuchinBehaviouralDiversity/SuppTable4.doc")
+
+null_m1_forage <-  glmmTMB(shannon ~ 1 +
+                              (1 | Group/PropMonkeysInScan),
+                              data = df_prop_forage,
+                              family = ziGamma,
+                            ziformula = ~ 1, start = list(beta = rep(0, 1)))
+                           
+m1_forage <-  glmmTMB(shannon ~ #Temp_z +
+                              #Rainfall_z +
+                              TotalGroupSize_z +
+                              #PropFemales +
+                              biomass_monthly_kg +
+                              (1 | Group/PropMonkeysInScan),
+                              data = df_prop_forage,
+                              family = ziGamma,
+                              ziformula = ~ 1, start = list(beta = rep(0, 3)), control = glmmTMBControl(optimizer = optim, optArgs = list(method = "BFGS")))
+
+AIC(null_m1_forage, m1_forage)
+
+#                  df      AIC
+#null_mRich_forage  3 27458.42
+#mRich_forage       8 27450.78
+
+mRich_forage_plot <- plot_model(mRich_forage, 
+                                        type = "pred", 
+                                        terms = c("TotalGroupSize_z"),
+                                        title = "",
+                                        colors = c("cornflowerblue"),  # Line color and CI color
+                                        ci.lvl = 0.95,  # Confidence interval level
+                                        alpha = 0.3) +  # Transparency of CI intervals
+                                        theme_minimal() +
+                                        labs(x = "\nTotal Group Size (z-scored)", 
+                                             y = "Predicted Foraging Behavioral Richness\n(Group Level)\n"); mRich_forage_plot
+
+
+ggarrange(mRich_forage_plot, SAG_group_level_plot, labels = c("A", "B"))
+```
+
+### DATA ANALYSIS INDIVIDUAL LEVEL FORAGING 
+
+```{r}
+
+rawDataIndRichnessForaging <- ggplot(data = df_combinedInd_forage, aes(x = TotalGroupSize, y = S.obs)) +
+  geom_jitter() +
+  theme_minimal() +
+  xlab("\nGroup Size") + ylab("Observed Behavioural Richness (Foraging)\n"); rawDataIndRichnessForaging
+
+rawDataIndShannonForaging <- ggplot(data = df_combinedInd_forage, aes(x = TotalGroupSize, y = shannon)) +
+  geom_jitter() +
+  theme_minimal() +
+  xlab("\nGroup Size") + ylab("Shannon Behavioural Diversity (Foraging)\n"); rawDataIndShannonForaging
+
+ggarrange(rawDataIndRichnessForaging, rawDataIndShannonForaging)
+
+null_model_mRichInd_forage <- glmmTMB(S.obs ~ 1 + 
+                            (1 | TotalScans/MonkeyName),
+                       data = df_combinedInd_forage,
+                       family = poisson)
+
+df_combinedInd_forage$Rainfall_z <- scale(df_combinedInd_forage$Rainfall)
+df_combinedInd_forage$TempMax_z <- scale(df_combinedInd_forage$TempMax)
+
+mRichInd_forage <- glmmTMB(S.obs ~ TempMax_z +
+                              Rainfall_z+
+                              AgeClass + 
+                              TotalGroupSize_z +
+                              domLevel +
+                              Sex +
+                              TotalGroupSize_z*domLevel + (1 | TotalScans/MonkeyName),
+                              data = df_combinedInd_forage,
+                              family = poisson)
+
+AIC(null_model_mRichInd_forage, mRichInd_forage)
+
+m1ind_null_forage <-  glmmTMB(shannon ~ 1 +
+                              (1 | TotalScans/MonkeyName), 
+                              data = df_combinedInd_forage,
+                              family = ziGamma, ziformula = ~ 1)
+
+m1ind_forage <- glmmTMB(shannon ~ TempMax_z +
+                              Rainfall_z +
+                              AgeClass + 
+                              TotalGroupSize_z +
+                              Sex +
+                              domLevel +
+                              TotalGroupSize_z*domLevel +
+                              (1 | TotalScans/MonkeyName), 
+                              data = df_combinedInd_forage,
+                              family = ziGamma, ziformula = ~ 1,
+                              start = list(beta = rep(0, 14)),  # Adjust the length based on the number of predictors
+                              control = glmmTMBControl(optimizer = optim, optArgs = list(method = "BFGS")))
+
+AIC(m1ind_null_forage, m1ind_forage)
+tab_model(m1ind_forage)
+
+tab_model(mRichInd_forage, m1ind_forage, file = "~/Desktop/CapuchinBehaviouralDiversity/SuppTable5.doc")
+
+mRich_forage_plot <- plot_model(mRich_forage, 
+                                        type = "pred", 
+                                        terms = c("TotalGroupSize_z"),
+                                        title = "",
+                                        colors = c("cornflowerblue"),  # Line color and CI color
+                                        ci.lvl = 0.95,  # Confidence interval level
+                                        alpha = 0.3) +  # Transparency of CI intervals
+                                        theme_minimal() +
+                                        labs(x = "\nTotal Group Size (z-scored)", 
+                                             y = "Predicted Foraging Behavioral Richness\n(Group Level)\n"); mRich_forage_plot
+
+mRich_Id_forage_plot <- plot_model(m1ind_forage, 
+                                        type = "pred", 
+                                        terms = c("TotalGroupSize_z"),
+                                        title = "",
+                                        colors = c("cornflowerblue"),  # Line color and CI color
+                                        ci.lvl = 0.95,  # Confidence interval level
+                                        alpha = 0.3) +  # Transparency of CI intervals
+                                        theme_minimal() +
+                                        labs(x = "\nTotal Group Size (z-scored)", 
+                                             y = "Predicted Shannon Foraging Diversity\n(Individual Level)\n"); mRich_Id_forage_plot
+
+ggarrange(mRich_forage_plot, mRich_Id_forage_plot, labels = c("A", "B"))
+```
